@@ -7,9 +7,253 @@ output: html_document
 
 Begin exploring with Eben Broadbent's data - this is preprocessed.
 
+load packages
 ```{r}
-
+library(terra)
+library(biodivMapR)
 ```
+
+define input and output paths
+```{r}
+# ------------------------------------------------------------
+# 1. DEFINE PATHS
+# ------------------------------------------------------------
+
+# Directory containing your individual band TIFs
+ortho_dir <- '/data/Orthomosaic'
+
+# Base name prefix (everything before the band suffix)
+prefix <- 'GatorEye_SubjectTerms_f072022_G2_p120422_v1_transparent_mosaic'
+
+# Individual band file paths
+blue_path     <- file.path(ortho_dir, paste0(prefix, '_blue.tif'))
+green_path    <- file.path(ortho_dir, paste0(prefix, '_green.tif'))
+red_path      <- file.path(ortho_dir, paste0(prefix, '_red.tif'))
+rededge_path  <- file.path(ortho_dir, paste0(prefix, '_red edge.tif'))
+nir_path      <- file.path(ortho_dir, paste0(prefix, '_nir.tif'))
+# NOTE: _lwir.tif (thermal) is intentionally excluded
+
+# Output directory
+output_dir <- '/outpu/biodivMapR_results'
+dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+```
+
+
+
+
+
+
+
+
+## BELOW IS THE CODE PRODUCED BY CLAUDE - ABOVE INTEGRATE IN SMALLER CHUNKS
+
+```{r}
+# ============================================================
+# biodivMapR Workflow: MicaSense Altum-PT (Pix4D single-band TIFs)
+# ============================================================
+
+library(terra)
+library(biodivMapR)
+
+# ------------------------------------------------------------
+# 1. DEFINE PATHS
+# ------------------------------------------------------------
+
+# Directory containing your individual band TIFs
+ortho_dir <- '/data/Orthomosaic'
+
+# Base name prefix (everything before the band suffix)
+prefix <- 'GatorEye_SubjectTerms_f072022_G2_p120422_v1_transparent_mosaic'
+
+# Individual band file paths
+blue_path     <- file.path(ortho_dir, paste0(prefix, '_blue.tif'))
+green_path    <- file.path(ortho_dir, paste0(prefix, '_green.tif'))
+red_path      <- file.path(ortho_dir, paste0(prefix, '_red.tif'))
+rededge_path  <- file.path(ortho_dir, paste0(prefix, '_red edge.tif'))
+nir_path      <- file.path(ortho_dir, paste0(prefix, '_nir.tif'))
+# NOTE: _lwir.tif (thermal) is intentionally excluded
+
+# Output directory
+output_dir <- '/path/to/072022/G2 - Las Cruces/Multispectral_ortho/biodivMapR_results'
+dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+# ------------------------------------------------------------
+# 2. STACK BANDS INTO A SINGLE 5-BAND GEOTIFF
+#    Band order: Blue, Green, Red, RedEdge, NIR
+# ------------------------------------------------------------
+
+stacked_path <- file.path(output_dir, 'altumPT_5band_stack.tif')
+
+if (!file.exists(stacked_path)) {
+  cat('Stacking individual band TIFs...\n')
+  
+  blue     <- terra::rast(blue_path)
+  green    <- terra::rast(green_path)
+  red      <- terra::rast(red_path)
+  rededge  <- terra::rast(rededge_path)
+  nir      <- terra::rast(nir_path)
+  
+  # Stack in order: Blue=1, Green=2, Red=3, RedEdge=4, NIR=5
+  stack <- c(blue, green, red, rededge, nir)
+  names(stack) <- c('Blue_475', 'Green_560', 'Red_668', 'RedEdge_717', 'NIR_842')
+  
+  terra::writeRaster(stack, stacked_path, overwrite = TRUE,
+                     datatype = 'FLT4S')  # float preserves reflectance values
+  cat('Stack saved to:', stacked_path, '\n')
+} else {
+  cat('Stack already exists, loading...\n')
+}
+
+stack <- terra::rast(stacked_path)
+
+# ------------------------------------------------------------
+# 3. CHECK REFLECTANCE SCALE
+#    Pix4D transparent_mosaic outputs are typically in 0-1 or 0-65535
+#    biodivMapR expects values in a consistent numeric range
+#    Print a quick summary to confirm
+# ------------------------------------------------------------
+
+cat('\n--- Reflectance value check (sample of band statistics) ---\n')
+print(terra::global(stack, fun = 'range', na.rm = TRUE))
+
+# If values are 0-65535 (scaled integer), normalize to 0-1:
+# stack <- stack / 65535
+# If values are 0-1 already, proceed as-is.
+# If values are 0-10000 (Pix4D scaled reflectance), that is also fine — 
+# just keep Blue_Thresh etc. consistent with that scale in Step 5.
+
+rast_path <- stacked_path  # used in subsequent steps
+
+# ------------------------------------------------------------
+# 4. BUILD VEGETATION MASK
+#    Uses NDVI (NIR + Red) and NIR threshold to exclude:
+#    - bare soil, water, impervious surfaces (low NDVI)
+#    - deep shadows (low NIR)
+#    Adjust thresholds based on your ecosystem and reflectance scale
+# ------------------------------------------------------------
+
+mask_path <- file.path(output_dir, 'vegetation_mask.tif')
+
+if (!file.exists(mask_path)) {
+  cat('\nBuilding vegetation mask...\n')
+  
+  Red <- stack[[3]]
+  NIR <- stack[[5]]
+  
+  NDVI <- (NIR - Red) / (NIR + Red)
+  
+  # ---- TUNE THESE THRESHOLDS ----
+  # For reflectance scale 0-1:
+  NDVI_thresh <- 0.3    # exclude NDVI < 0.3 (non-vegetation)
+  NIR_thresh  <- 0.1    # exclude NIR < 0.1 (shadows)
+  # For scale 0-10000, multiply thresholds by 10000
+  # --------------------------------
+  
+  mask <- as.integer((NDVI >= NDVI_thresh) & (NIR >= NIR_thresh))
+  
+  terra::writeRaster(mask, mask_path, overwrite = TRUE, datatype = 'INT1U')
+  cat('Mask saved. Check it in QGIS before proceeding!\n')
+}
+
+# IMPORTANT: Open vegetation_mask.tif in QGIS and visually verify 
+# that vegetation is 1 (white) and non-vegetation/shadows are 0 (black)
+# Adjust NDVI_thresh and NIR_thresh above if needed, then re-run
+
+# ------------------------------------------------------------
+# 5. RADIOMETRIC FILTERING (biodivMapR refines mask further)
+# ------------------------------------------------------------
+
+sensor_bands <- c(475, 560, 668, 717, 842)  # Altum-PT center wavelengths (nm)
+
+output_dir_PCA <- file.path(output_dir, 'SPCA')
+dir.create(output_dir_PCA, showWarnings = FALSE, recursive = TRUE)
+
+# Adjust thresholds to match your reflectance scale!
+# For 0-1 scale:    NDVI=0.3, Blue=0.15, NIR=0.1
+# For 0-10000 scale: NDVI=0.3, Blue=1500, NIR=1000
+mask_path_PCA <- radiometric_filtering(
+  input_raster_path = rast_path,
+  input_rast_wl     = sensor_bands,
+  input_mask_path   = mask_path,
+  output_dir        = output_dir_PCA,
+  NDVI_Thresh       = 0.3,
+  Blue_Thresh       = 0.15,
+  NIR_Thresh        = 0.1
+)
+
+# ------------------------------------------------------------
+# 6. SPECTRAL TRANSFORMATION (SPCA with Continuum Removal)
+#    Continuum Removal is recommended for high-res drone data
+#    to reduce within-crown illumination effects
+# ------------------------------------------------------------
+
+cat('\nRunning SPCA...\n')
+PCA_Output <- perform_PCA(
+  input_raster_path = rast_path,
+  input_rast_wl     = sensor_bands,
+  output_dir        = output_dir_PCA,
+  Continuum_Removal = TRUE,
+  input_mask_path   = mask_path_PCA,
+  maxRows           = 1000
+)
+
+# ------------------------------------------------------------
+# 7. VISUALLY INSPECT PCA COMPONENTS
+#    Open the PCA output in QGIS or plot here
+#    Select components that show meaningful vegetation patterns
+#    (vegetation type boundaries, not noise or striping artifacts)
+# ------------------------------------------------------------
+
+pca_rast <- terra::rast(PCA_Output$PCA_Files$PCA)
+cat('\nNumber of PCA components:', terra::nlyr(pca_rast), '\n')
+
+# Plot all components for visual inspection
+terra::plot(pca_rast, main = paste0('PC', 1:terra::nlyr(pca_rast)))
+
+# Update selected_bands after visual inspection:
+selected_bands <- c(1, 2, 3, 4)  # typically skip the last noisy PC
+
+# ------------------------------------------------------------
+# 8. RUN biodivMapR — α AND β DIVERSITY
+# ------------------------------------------------------------
+
+output_dir_biodivMapR <- file.path(output_dir, 'biodivMapR_SPCA')
+dir.create(output_dir_biodivMapR, showWarnings = FALSE, recursive = TRUE)
+
+Kmeans_info_save <- file.path(output_dir_biodivMapR, 'Kmeans_info.RData')
+Beta_info_save   <- file.path(output_dir_biodivMapR, 'Beta_info.RData')
+
+options_bdmr <- set_options_biodivMapR(fun = 'biodivMapR_full')
+options_bdmr$nb_clusters   <- 50   # number of spectral species
+options_bdmr$maxRows       <- 1000
+options_bdmr$alpha_metrics <- c('richness', 'shannon', 'hill')
+
+# --- WINDOW SIZE GUIDE for Altum-PT ---
+# At 120m AGL: ~5.3 cm/px  →  window=10 ≈ 0.53m, window=30 ≈ 1.6m, window=100 ≈ 5.3m
+# At  60m AGL: ~2.6 cm/px  →  window=10 ≈ 0.26m, window=50 ≈ 1.3m, window=100 ≈ 2.6m
+# Match window to the scale of your ecological unit of interest (e.g. tree crown, plot)
+window_size <- 30  # adjust based on your flight altitude and ecological scale
+
+cat('\nRunning biodivMapR (this may take a while for large orthomosaics)...\n')
+ab_info <- biodivMapR_full(
+  input_raster_path = PCA_Output$PCA_Files$PCA,
+  input_mask_path   = mask_path_PCA,
+  output_dir        = output_dir_biodivMapR,
+  selected_bands    = selected_bands,
+  window_size       = window_size,
+  Kmeans_info_save  = Kmeans_info_save,
+  Beta_info_save    = Beta_info_save,
+  nbCPU             = 4,           # set to your available CPU cores
+  options           = options_bdmr
+)
+
+cat('\nDone! Output diversity maps are in:\n', output_dir_biodivMapR, '\n')
+cat('Load them in QGIS or R with terra::rast() for visualization.\n')
+```
+
+
+
+
 
 
 
