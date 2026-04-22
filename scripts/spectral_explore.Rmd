@@ -56,24 +56,24 @@ they have 2 - second is an alpha transparency channel
 - now stack - this will write a large file, so do a sanity check first
 ```{r}
 # Select only band 1 (reflectance) from each file, dropping the alpha channel (band 2)
-stack <- c(
-  terra::rast(blue_path)[[1]],
-  terra::rast(green_path)[[1]],
-  terra::rast(red_path)[[1]],
-  terra::rast(rededge_path)[[1]],
-  terra::rast(nir_path)[[1]]
-)
-names(stack) <- c('Blue_475', 'Green_560', 'Red_668', 'RedEdge_717', 'NIR_842')
-
-terra::writeRaster(stack, stacked_path, overwrite = TRUE, datatype = 'FLT4S')
-cat('Stack saved to:', stacked_path, '\n')
+# stack <- c(
+#   terra::rast(blue_path)[[1]],
+#   terra::rast(green_path)[[1]],
+#   terra::rast(red_path)[[1]],
+#   terra::rast(rededge_path)[[1]],
+#   terra::rast(nir_path)[[1]]
+# )
+# names(stack) <- c('Blue_475', 'Green_560', 'Red_668', 'RedEdge_717', 'NIR_842')
+# 
+# terra::writeRaster(stack, stacked_path, overwrite = TRUE, datatype = 'FLT4S')
+# cat('Stack saved to:', stacked_path, '\n')
 ```
 
 ensure that the individual layers are ready for stacking
 ```{r}
 # Quick sanity check before writing
-print(stack)          # confirms 5 layers, correct names, CRS, extent
-terra::nlyr(stack)    # should return 5
+# print(stack)          # confirms 5 layers, correct names, CRS, extent
+# terra::nlyr(stack)    # should return 5
 ```
 
 stack them here
@@ -85,16 +85,79 @@ stack them here
 
 run reflectance scale check
 ```{r}
-stack <- terra::rast(stacked_path)
-print(terra::global(stack, fun = 'range', na.rm = TRUE))
+# stack <- terra::rast(stacked_path)
+# print(terra::global(stack, fun = 'range', na.rm = TRUE))
 ```
 
+create vegetation mask - important to remove non veg from spectral diversity estimates
+```{r}
+# ------------------------------------------------------------
+# 4. BUILD VEGETATION MASK
+#    Uses NDVI (NIR + Red) and NIR threshold to exclude:
+#    - bare soil, water, impervious surfaces (low NDVI)
+#    - deep shadows (low NIR)
+#    Adjust thresholds based on your ecosystem and reflectance scale
+# ------------------------------------------------------------
 
+mask_path <- file.path(output_dir, 'vegetation_mask.tif')
 
+if (!file.exists(mask_path)) {
+  cat('\nBuilding vegetation mask...\n')
+  
+  Red <- stack[[3]]
+  NIR <- stack[[5]]
+  
+  NDVI <- (NIR - Red) / (NIR + Red)
+  
+  # ---- TUNE THESE THRESHOLDS ----
+  # Data is in raw DN scale (0-65535), so NIR threshold is scaled accordingly.
+  # NDVI is always in [-1, 1] regardless of input scale.
+  NDVI_thresh <- 0.3      # exclude NDVI < 0.3 (non-vegetation)
+  NIR_thresh  <- 6554     # ~10% of 65535 scale; exclude deep shadows
+  # --------------------------------
+  
+  # Use terra::ifel() instead of as.integer() — base R coercion fails on SpatRaster
+  mask <- terra::ifel((NDVI >= NDVI_thresh) & (NIR >= NIR_thresh), 1L, 0L)
+  
+  terra::writeRaster(mask, mask_path, overwrite = TRUE, datatype = 'INT1U')
+  cat('Mask saved. Check it in QGIS before proceeding!\n')
+}
 
+# IMPORTANT: Open vegetation_mask.tif in QGIS and visually verify 
+# that vegetation is 1 (white) and non-vegetation/shadows are 0 (black)
+# Adjust NDVI_thresh and NIR_thresh above if needed, then re-run
+```
 
+vegetation mask looks fine - probably would want to adjust the thresholds if 
+using fr but as exploratory it checks out
 
-RESUME BELOW AT NUMBER 4 - VEGETATION MASK!
+radiometric filtering - another step for refining the mask?
+- in this case there's no difference compared to the manual vegetation_mask
+- but sometimes this will catch more issues in the blue band
+```{r}
+# ------------------------------------------------------------
+# 5. RADIOMETRIC FILTERING (biodivMapR refines mask further)
+# ------------------------------------------------------------
+
+sensor_bands <- c(475, 560, 668, 717, 842)  # Altum-PT center wavelengths (nm)
+
+output_dir_PCA <- file.path(output_dir, 'SPCA')
+dir.create(output_dir_PCA, showWarnings = FALSE, recursive = TRUE)
+
+# Thresholds scaled to raw DN range (0-65535).
+# NDVI is unitless [-1, 1] and needs no scaling.
+# NIR and Blue thresholds are ~10% and ~15% of 65535 respectively.
+mask_path_PCA <- radiometric_filtering(
+  input_raster_path = stacked_path,
+  input_rast_wl     = sensor_bands,
+  input_mask_path   = mask_path,
+  output_dir        = output_dir_PCA,
+  NDVI_Thresh       = 0.3,
+  Blue_Thresh       = 9830,
+  NIR_Thresh        = 6554
+)
+```
+
 
 
 
