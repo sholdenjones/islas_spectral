@@ -159,6 +159,106 @@ mask_path_PCA <- radiometric_filtering(
 ```
 
 
+spectral transformation (SPCA) with continuum removal
+- this is producing some spooky errors about memory space
+- skip b/c doesn't seem completely necessary and last filtering did nothing
+```{r}
+# # ------------------------------------------------------------
+# # 6. SPECTRAL TRANSFORMATION (SPCA with Continuum Removal)
+# #    Continuum Removal is recommended for high-res drone data
+# #    to reduce within-crown illumination effects
+# # ------------------------------------------------------------
+# 
+# cat('\nRunning SPCA...\n')
+# PCA_Output <- perform_PCA(
+#   input_raster_path = stacked_path,
+#   input_rast_wl     = sensor_bands,
+#   output_dir        = output_dir_PCA,
+#   Continuum_Removal = TRUE,
+#   input_mask_path   = mask_path_PCA,
+#   nb_pix_pca        = 2.5e+05,
+#   maxRows           = 50
+# )
+```
+
+aggregate raster to 20cm resolution before running biodivMapR
+- full resolution (5cm) is ~12.4 GB in memory — too large for 16 GB RAM
+- aggregating by factor 4 reduces pixel count ~16x to ~39M pixels (~780 MB)
+- 20cm is still ecologically meaningful for canopy-scale spectral diversity
+```{r}
+agg_path      <- file.path(output_dir, 'altumPT_5band_stack_20cm.tif')
+mask_agg_path <- file.path(output_dir, 'vegetation_mask_20cm.tif')
+
+if (!file.exists(agg_path)) {
+  cat('Aggregating raster to 20cm resolution...\n')
+  r_full <- terra::rast(stacked_path)
+  r_agg  <- terra::aggregate(r_full, fact = 4, fun = 'mean')
+  terra::writeRaster(r_agg, agg_path, overwrite = TRUE, datatype = 'FLT4S')
+  cat('Aggregated raster saved to:', agg_path, '\n')
+}
+
+if (!file.exists(mask_agg_path)) {
+  cat('Resampling vegetation mask to 20cm resolution...\n')
+  r_agg     <- terra::rast(agg_path)
+  mask_orig <- terra::rast(mask_path_PCA)
+  mask_agg  <- terra::resample(mask_orig, r_agg, method = 'near')
+  terra::writeRaster(mask_agg, mask_agg_path, overwrite = TRUE, datatype = 'INT1U')
+  cat('Resampled mask saved to:', mask_agg_path, '\n')
+}
+```
+
+finally! run biodivMapR!
+```{r}
+# ------------------------------------------------------------
+# 8. RUN biodivMapR — α AND β DIVERSITY
+# ------------------------------------------------------------
+
+output_dir_biodivMapR <- file.path(output_dir, 'biodivMapR_SPCA')
+dir.create(output_dir_biodivMapR, showWarnings = FALSE, recursive = TRUE)
+
+Kmeans_info_save <- file.path(output_dir_biodivMapR, 'Kmeans_info.RData')
+Beta_info_save   <- file.path(output_dir_biodivMapR, 'Beta_info.RData')
+
+options_bdmr <- set_options_biodivMapR(fun = 'biodivMapR_full')
+options_bdmr$nb_clusters   <- 20   # reduced from 50 to ease memory
+options_bdmr$maxRows       <- 50
+options_bdmr$alpha_metrics <- c('richness', 'shannon', 'hill')
+
+# --- WINDOW SIZE GUIDE for Altum-PT ---
+# At 120m AGL: ~5.3 cm/px  →  window=10 ≈ 0.53m, window=30 ≈ 1.6m, window=100 ≈ 5.3m
+# At  60m AGL: ~2.6 cm/px  →  window=10 ≈ 0.26m, window=50 ≈ 1.3m, window=100 ≈ 2.6m
+# Match window to the scale of your ecological unit of interest (e.g. tree crown, plot)
+window_size <- 30  # adjust based on your flight altitude and ecological scale
+
+cat('\nRunning biodivMapR (this may take a while for large orthomosaics)...\n')
+ab_info <- biodivMapR_full(
+  input_raster_path = agg_path,
+  input_mask_path   = mask_agg_path,
+  output_dir        = output_dir_biodivMapR,
+  selected_bands    = 1:5,
+  window_size       = window_size,
+  Kmeans_info_save  = Kmeans_info_save,
+  Beta_info_save    = Beta_info_save,
+  nbCPU             = 1,   # single CPU avoids multiplying memory usage
+  options           = options_bdmr
+)
+
+cat('\nDone! Output diversity maps are in:\n', output_dir_biodivMapR, '\n')
+cat('Load them in QGIS or R with terra::rast() for visualization.\n')
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
