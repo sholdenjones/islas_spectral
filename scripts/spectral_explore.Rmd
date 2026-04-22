@@ -14,13 +14,15 @@ library(biodivMapR)
 ```
 
 define input and output paths
+- note that using external harddrive for data storage
+- b/c massive datasizes
 ```{r}
 # ------------------------------------------------------------
 # 1. DEFINE PATHS
 # ------------------------------------------------------------
 
 # Directory containing your individual band TIFs
-ortho_dir <- '/data/Orthomosaic'
+ortho_dir <- '/Volumes/SHJ_Drive2/gator_eye/072022/G2 - Las Cruces/Multispectral_ortho/Orthomosaic'
 
 # Base name prefix (everything before the band suffix)
 prefix <- 'GatorEye_SubjectTerms_f072022_G2_p120422_v1_transparent_mosaic'
@@ -34,10 +36,65 @@ nir_path      <- file.path(ortho_dir, paste0(prefix, '_nir.tif'))
 # NOTE: _lwir.tif (thermal) is intentionally excluded
 
 # Output directory
-output_dir <- '/outpu/biodivMapR_results'
+output_dir <- '/Volumes/SHJ_Drive2/gator_eye/072022/G2 - Las Cruces/Multispectral_ortho/Orthomosaic/biodivMapR_results'
 dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+stacked_path <- file.path(output_dir, 'altumPT_5band_stack.tif')
 ```
 
+checking how many layers actually in single-band TIFS
+```{r}
+# Check how many bands (layers) each file actually has
+cat('Blue bands:   ', terra::nlyr(terra::rast(blue_path)), '\n')
+cat('Green bands:  ', terra::nlyr(terra::rast(green_path)), '\n')
+cat('Red bands:    ', terra::nlyr(terra::rast(red_path)), '\n')
+cat('RedEdge bands:', terra::nlyr(terra::rast(rededge_path)), '\n')
+cat('NIR bands:    ', terra::nlyr(terra::rast(nir_path)), '\n')
+```
+
+they have 2 - second is an alpha transparency channel
+- now stack - this will write a large file, so do a sanity check first
+```{r}
+# Select only band 1 (reflectance) from each file, dropping the alpha channel (band 2)
+stack <- c(
+  terra::rast(blue_path)[[1]],
+  terra::rast(green_path)[[1]],
+  terra::rast(red_path)[[1]],
+  terra::rast(rededge_path)[[1]],
+  terra::rast(nir_path)[[1]]
+)
+names(stack) <- c('Blue_475', 'Green_560', 'Red_668', 'RedEdge_717', 'NIR_842')
+
+terra::writeRaster(stack, stacked_path, overwrite = TRUE, datatype = 'FLT4S')
+cat('Stack saved to:', stacked_path, '\n')
+```
+
+ensure that the individual layers are ready for stacking
+```{r}
+# Quick sanity check before writing
+print(stack)          # confirms 5 layers, correct names, CRS, extent
+terra::nlyr(stack)    # should return 5
+```
+
+stack them here
+```{r}
+# comment out b/c this takes a really long time
+# terra::writeRaster(stack, stacked_path, overwrite = TRUE, datatype = 'FLT4S')
+# cat('Stack saved to:', stacked_path, '\n')
+```
+
+run reflectance scale check
+```{r}
+stack <- terra::rast(stacked_path)
+print(terra::global(stack, fun = 'range', na.rm = TRUE))
+```
+
+
+
+
+
+
+RESUME BELOW AT NUMBER 4 - VEGETATION MASK!
 
 
 
